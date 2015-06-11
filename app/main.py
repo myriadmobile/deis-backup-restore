@@ -1,9 +1,11 @@
 #!/usr/bin/env python
+from Queue import Queue
 import argparse
 from datetime import datetime
 import json
 import subprocess
 import tempfile
+from threading import Thread
 
 import boto
 from boto.s3.connection import OrdinaryCallingFormat
@@ -14,10 +16,10 @@ import os
 
 class DeisBackupRestore:
     _etcd_connection = None
-    _deis_s3_connection = None
-    _remote_s3_connection = None
-
     _base_directory = None
+
+    _deis_s3_connection_args = None
+    _remote_s3_connection_args = None
 
     def __init__(self, aws_access_key_id='', aws_secret_access_key='', host='s3.amazonaws.com', port=443,
                  is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, dry_run=False):
@@ -47,31 +49,39 @@ class DeisBackupRestore:
         except:
             return default
 
-    def get_deis_s3_connection(self):
-        if self._deis_s3_connection is None:
+    def get_deis_s3_connection_args(self):
+        if self._deis_s3_connection_args is None:
             host = self.get_etcd_value('/deis/store/gateway/host')
             port = self.get_etcd_value('/deis/store/gateway/port')
             aws_access_key_id = self.get_etcd_value('/deis/store/gateway/accessKey')
             aws_secret_access_key = self.get_etcd_value('/deis/store/gateway/secretKey')
-            self._deis_s3_connection = boto.connect_s3(
-                aws_access_key_id=aws_access_key_id,
-                aws_secret_access_key=aws_secret_access_key,
-                host=host,
-                port=int(port),
-                is_secure=False,
-                calling_format=OrdinaryCallingFormat())
-        return self._deis_s3_connection
+            self._deis_s3_connection_args = {
+                'aws_access_key_id': aws_access_key_id,
+                'aws_secret_access_key': aws_secret_access_key,
+                'host': host,
+                'port': int(port),
+                'is_secure': False,
+                'calling_format': OrdinaryCallingFormat()
+            }
+        return self._deis_s3_connection_args
+
+    def get_remote_s3_connection_args(self):
+        if self._remote_s3_connection_args is None:
+            self._remote_s3_connection_args = {
+                'aws_access_key_id': self._remote_access_key,
+                'aws_secret_access_key': self._remote_secret_key,
+                'host': self._remote_host,
+                'port': self._remote_port,
+                'is_secure': self._remote_is_secure,
+                'calling_format': OrdinaryCallingFormat()
+            }
+        return self._remote_s3_connection_args
+
+    def get_deis_s3_connection(self):
+        return boto.connect_s3(**self.get_deis_s3_connection_args())
 
     def get_remote_s3_connection(self):
-        if self._remote_s3_connection is None:
-            self._remote_s3_connection = boto.connect_s3(
-                aws_access_key_id=self._remote_access_key,
-                aws_secret_access_key=self._remote_secret_key,
-                host=self._remote_host,
-                port=self._remote_port,
-                is_secure=self._remote_is_secure,
-                calling_format=OrdinaryCallingFormat())
-        return self._remote_s3_connection
+        return boto.connect_s3(**self.get_remote_s3_connection_args())
 
     def get_deis_s3_bucket(self, bucket_name):
         return self.get_deis_s3_connection().get_bucket(bucket_name)
@@ -113,16 +123,24 @@ class DeisBackupRestore:
 
     def backup_bucket(self, deis_bucket_name):
         print('backing up bucket ' + deis_bucket_name)
+
+        pool = BucketThreadPool(8, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
+
         deis_bucket = self.get_deis_s3_bucket(deis_bucket_name)
-        remote_bucket = self.get_remote_s3_bucket()
         for key in deis_bucket.list():
-            remote_key = Key(remote_bucket, self.get_remote_key_name(deis_bucket_name, key.key))
-            if key.size < 16000000:  # less than 16mb, do in ram
-                self.set_contents_from_string(remote_key, key.get_contents_as_string())
-            else:
-                temp = tempfile.SpooledTemporaryFile()
-                key.get_contents_to_file(temp)
-                self.set_contents_from_file(remote_key, temp)
+            pool.add_task(self.backup_file, *(deis_bucket_name, key.key))
+
+        pool.wait_completion()
+
+    def backup_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
+        key = Key(deis_bucket, key_name)
+        remote_key = Key(remote_bucket, self.get_remote_key_name(deis_bucket_name, key_name))
+        if key.size < 16000000:  # less than 16mb, do in ram
+            self.set_contents_from_string(remote_key, key.get_contents_as_string())
+        else:
+            temp = tempfile.SpooledTemporaryFile()
+            key.get_contents_to_file(temp)
+            self.set_contents_from_file(remote_key, temp)
 
     def restore_bucket(self, deis_bucket_name):
         print('restoring bucket ' + deis_bucket_name)
@@ -133,17 +151,28 @@ class DeisBackupRestore:
         except:
             print('bucket already exists')
 
-        deis_bucket = self.get_deis_s3_bucket(deis_bucket_name)
-        remote_bucket = self.get_remote_s3_bucket()
+        print 'emptying bucket...'
+        bucket = self.get_deis_s3_bucket(deis_bucket_name)
+        bucket_list = bucket.list()
+        bucket.delete_keys([key.name for key in bucket_list])
 
+        pool = BucketThreadPool(8, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
+
+        remote_bucket = self.get_remote_s3_bucket()
         for key in remote_bucket.list(prefix=self.get_base_directory() + '/' + deis_bucket_name + '/'):
-            deis_key = Key(deis_bucket, self.get_deis_key_name(deis_bucket_name, key.key))
-            if key.size < 16000000:  # less than 16mb, do in ram
-                self.set_contents_from_string(deis_key, key.get_contents_as_string())
-            else:
-                temp = tempfile.SpooledTemporaryFile()
-                key.get_contents_to_file(temp)
-                self.set_contents_from_file(deis_key, temp)
+            pool.add_task(self.restore_file, *(deis_bucket_name, key.key))
+
+        pool.wait_completion()
+
+    def restore_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
+        key = Key(remote_bucket, key_name)
+        deis_key = Key(deis_bucket, self.get_deis_key_name(deis_bucket_name, key.key))
+        if key.size < 16000000:  # less than 16mb, do in ram
+            self.set_contents_from_string(deis_key, key.get_contents_as_string())
+        else:
+            temp = tempfile.SpooledTemporaryFile()
+            key.get_contents_to_file(temp)
+            self.set_contents_from_file(deis_key, temp)
 
     def set_contents_from_string(self, key, string):
         if self._dry_run:
@@ -176,6 +205,8 @@ class DeisBackupRestore:
         self.restore_bucket(bucket_name)
 
     def backup_etcd(self):
+        print ('backing up etcd...')
+
         whitelist = [
             '/deis/builder/image',
             '/deis/cache/maxmemory',
@@ -260,6 +291,7 @@ class DeisBackupRestore:
         self.set_contents_from_string(key, json.dumps(dumplist))
 
     def restore_etcd(self):
+        print ('restoring etcd...')
         bucket = self.get_remote_s3_bucket()
         key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
         data = json.loads(key.get_contents_as_string(encoding='utf-8'))
@@ -273,6 +305,43 @@ class DeisBackupRestore:
         else:
             self.get_etcd_connection().write(entry['key'].encode('utf-8'), entry['value'].encode('utf-8'),
                                              ttl=entry['ttl'], dir=entry['dir'])
+
+
+class BucketWorker(Thread):
+    """Thread executing tasks from a given tasks queue"""
+
+    def __init__(self, tasks, deis_bucket, remote_bucket):
+        Thread.__init__(self)
+        self.deis_bucket = deis_bucket
+        self.remote_bucket = remote_bucket
+        self.tasks = tasks
+        self.daemon = True
+        self.start()
+
+    def run(self):
+        while True:
+            func, args = self.tasks.get()
+            try:
+                func(*args, **{'deis_bucket': self.deis_bucket, 'remote_bucket': self.remote_bucket})
+            except Exception, e:
+                print e
+            self.tasks.task_done()
+
+
+class BucketThreadPool:
+    """Pool of threads consuming tasks from a queue"""
+
+    def __init__(self, num_threads, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
+        self.tasks = Queue(num_threads)
+        for _ in range(num_threads): BucketWorker(self.tasks, deis_bucket_fn(deis_bucket_name), remote_bucket_fn())
+
+    def add_task(self, func, *args):
+        """Add a task to the queue"""
+        self.tasks.put((func, args))
+
+    def wait_completion(self):
+        """Wait for completion of all the tasks in the queue"""
+        self.tasks.join()
 
 
 if __name__ == '__main__':

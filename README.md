@@ -7,6 +7,7 @@ Deis Backup/Restore provides a simple method of backing up and restoring the gat
 - backup and restore the registry and database
 - highly configurable
 - works with any s3 compatible stores
+- multi-threaded for performance
 
 ## Basic Usage
 

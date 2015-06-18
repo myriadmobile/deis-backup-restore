@@ -12,7 +12,7 @@ Deis Backup/Restore provides a simple method of backing up and restoring the gat
 ## Basic Usage
 
 ```bash
-docker run -it myriadmobile/deis-backup-restore:v1.0.0 \
+docker run -it myriadmobile/deis-backup-restore:v1.0.1 \
 	--key S3_ACCESS_KEY_ID \
 	--secret S3_SECRET_KEY \
 	--bucket S3_BUCKET_NAME \

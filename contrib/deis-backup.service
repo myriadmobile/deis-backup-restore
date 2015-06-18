@@ -3,9 +3,10 @@ Description=deis-backup
 
 [Service]
 EnvironmentFile=/etc/environment
-TimeoutStartSec=20m
-RestartSec=5
+RestartSec=300
 Restart=on-failure
+StartLimitInterval=3600
+StartLimitBurst=5
 ExecStartPre=/bin/sh -c "docker history myriadmobile/deis-backup-restore >/dev/null || docker pull myriadmobile/deis-backup-restore"
 ExecStartPre=/bin/sh -c "docker inspect deis-backup-restore >/dev/null 2>&1 && docker rm -f deis-backup >/dev/null 2>&1 || true"
 ExecStart=/bin/sh -c "docker run --name deis-backup myriadmobile/deis-backup-restore --key REPLACE_ME --secret REPLACE_ME --bucket REPLACE_ME --etcd-host $COREOS_PRIVATE_IPV4 backup"

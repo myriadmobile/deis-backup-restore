@@ -6,6 +6,7 @@ import json
 import subprocess
 import tempfile
 from threading import Thread
+import time
 import sys
 import traceback
 
@@ -19,9 +20,6 @@ import os
 class DeisBackupRestore:
     _etcd_connection = None
     _base_directory = None
-
-    _deis_s3_connection_args = None
-    _remote_s3_connection_args = None
 
     def __init__(self, aws_access_key_id='', aws_secret_access_key='', host='s3.amazonaws.com', port=443,
                  is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, dry_run=False):
@@ -52,32 +50,28 @@ class DeisBackupRestore:
             return default
 
     def get_deis_s3_connection_args(self):
-        if self._deis_s3_connection_args is None:
-            host = self.get_etcd_value('/deis/store/gateway/host')
-            port = self.get_etcd_value('/deis/store/gateway/port')
-            aws_access_key_id = self.get_etcd_value('/deis/store/gateway/accessKey')
-            aws_secret_access_key = self.get_etcd_value('/deis/store/gateway/secretKey')
-            self._deis_s3_connection_args = {
-                'aws_access_key_id': aws_access_key_id,
-                'aws_secret_access_key': aws_secret_access_key,
-                'host': host,
-                'port': int(port),
-                'is_secure': False,
-                'calling_format': OrdinaryCallingFormat()
-            }
-        return self._deis_s3_connection_args
+        host = self.get_etcd_value('/deis/store/gateway/host')
+        port = self.get_etcd_value('/deis/store/gateway/port')
+        aws_access_key_id = self.get_etcd_value('/deis/store/gateway/accessKey')
+        aws_secret_access_key = self.get_etcd_value('/deis/store/gateway/secretKey')
+        return {
+            'aws_access_key_id': aws_access_key_id,
+            'aws_secret_access_key': aws_secret_access_key,
+            'host': host,
+            'port': int(port),
+            'is_secure': False,
+            'calling_format': OrdinaryCallingFormat()
+        }
 
     def get_remote_s3_connection_args(self):
-        if self._remote_s3_connection_args is None:
-            self._remote_s3_connection_args = {
-                'aws_access_key_id': self._remote_access_key,
-                'aws_secret_access_key': self._remote_secret_key,
-                'host': self._remote_host,
-                'port': self._remote_port,
-                'is_secure': self._remote_is_secure,
-                'calling_format': OrdinaryCallingFormat()
-            }
-        return self._remote_s3_connection_args
+        return {
+            'aws_access_key_id': self._remote_access_key,
+            'aws_secret_access_key': self._remote_secret_key,
+            'host': self._remote_host,
+            'port': self._remote_port,
+            'is_secure': self._remote_is_secure,
+            'calling_format': OrdinaryCallingFormat()
+        }
 
     def get_deis_s3_connection(self):
         return boto.connect_s3(**self.get_deis_s3_connection_args())
@@ -332,22 +326,48 @@ class DeisBackupRestore:
 class BucketWorker(Thread):
     """Thread executing tasks from a given tasks queue"""
 
-    def __init__(self, tasks, deis_bucket, remote_bucket):
+    deis_bucket = None
+    remote_bucket = None
+
+    current_task = None
+    try_num = 0
+
+    def __init__(self, tasks, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
         Thread.__init__(self)
-        self.deis_bucket = deis_bucket
-        self.remote_bucket = remote_bucket
         self.tasks = tasks
+        self.deis_bucket_fn = deis_bucket_fn
+        self.deis_bucket_name = deis_bucket_name
+        self.remote_bucket_fn = remote_bucket_fn
         self.daemon = True
         self.start()
 
+    def reset_connections(self):
+        self.deis_bucket = self.deis_bucket_fn(self.deis_bucket_name)
+        self.remote_bucket = self.remote_bucket_fn()
+
     def run(self):
         while True:
-            func, args = self.tasks.get()
+            if self.try_num == 0:
+                self.current_task = self.tasks.get()
+
             try:
+                if self.deis_bucket is None:
+                    self.reset_connections()
+                func, args = self.current_task
                 func(*args, **{'deis_bucket': self.deis_bucket, 'remote_bucket': self.remote_bucket})
-            except Exception, e:
-                print e
+            except:
+                print traceback.format_exc()
+                self.deis_bucket = None
+                if self.try_num < 3:
+                    self.try_num += 1
+                    time.sleep(self.try_num * 2)
+                    continue
+
             self.tasks.task_done()
+            self.try_num = 0
+
+            if self.tasks.empty():
+                time.sleep(1)
 
 
 class BucketThreadPool:
@@ -355,7 +375,8 @@ class BucketThreadPool:
 
     def __init__(self, num_threads, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
         self.tasks = Queue(num_threads)
-        for _ in range(num_threads): BucketWorker(self.tasks, deis_bucket_fn(deis_bucket_name), remote_bucket_fn())
+        for _ in range(num_threads):
+            BucketWorker(self.tasks, deis_bucket_fn, deis_bucket_name, remote_bucket_fn)
 
     def add_task(self, func, *args):
         """Add a task to the queue"""

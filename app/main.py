@@ -21,8 +21,10 @@ class DeisBackupRestore:
     _etcd_connection = None
     _base_directory = None
 
+    _log_path = '/data/logs/'
+
     def __init__(self, aws_access_key_id='', aws_secret_access_key='', host='s3.amazonaws.com', port=443,
-                 is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, dry_run=False):
+                 is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, no_logs=False, dry_run=False):
         self._remote_access_key = aws_access_key_id
         self._remote_secret_key = aws_secret_access_key
         self._remote_host = host
@@ -31,6 +33,7 @@ class DeisBackupRestore:
         self._remote_bucket_name = bucket_name
         self._etcd_host = etcd_host
         self._etcd_port = etcd_port
+        self._no_logs = no_logs
         self._dry_run = dry_run
 
     def get_base_directory(self):
@@ -98,6 +101,8 @@ class DeisBackupRestore:
             self.backup_database_sql()
             self.backup_database_wal()
             self.backup_registry()
+            if not self._no_logs:
+                self.backup_logs()
         except:
             ex_type, ex, tb = sys.exc_info()
             try:
@@ -113,6 +118,8 @@ class DeisBackupRestore:
         self.restore_etcd()
         self.restore_database_wal()
         self.restore_registry()
+        if not self._no_logs:
+            self.restore_logs()
 
     def write_success_file(self, started_at, ended_at):
         bucket = self.get_remote_s3_bucket()
@@ -207,6 +214,13 @@ class DeisBackupRestore:
         else:
             print('uploading ' + key.key)
             key.set_contents_from_file(file, rewind=True)
+
+    def get_contents_to_file(self, key, file):
+        if self._dry_run:
+            print('dry-run: not getting ' + key.key + ' to ' + file.name)
+        else:
+            print('getting ' + key.key + ' to ' + file.name)
+            key.get_contents_to_file(file)
 
     def backup_database_wal(self):
         bucket_name = self.get_etcd_value('/deis/database/bucketName', 'db_wal')
@@ -326,6 +340,23 @@ class DeisBackupRestore:
             self.get_etcd_connection().write(entry['key'].encode('utf-8'), entry['value'].encode('utf-8'),
                                              ttl=entry['ttl'], dir=entry['dir'])
 
+    def backup_logs(self):
+        print('backing up logs')
+
+        log_files = [f for f in os.listdir(self._log_path) if os.path.isfile(os.path.join(self._log_path, f))]
+        for filename in log_files:
+            file_path = os.path.join(self._log_path, filename)
+            key = Key(self.get_remote_s3_bucket(), self.get_remote_key_name('logs', filename))
+            self.set_contents_from_file(key, file(file_path))
+
+    def restore_logs(self):
+        print('restoring logs')
+
+        remote_bucket = self.get_remote_s3_bucket()
+        for key in remote_bucket.list(prefix=self.get_base_directory() + '/logs/'):
+            file_path = os.path.join(self._log_path, os.path.basename(key.key))
+            self.get_contents_to_file(key, file_path)
+
 
 class BucketWorker(Thread):
     """Thread executing tasks from a given tasks queue"""
@@ -402,6 +433,7 @@ if __name__ == '__main__':
     parser.add_argument('--dry-run', dest='dry_run', action='store_true', help='dry run')
     parser.add_argument('--etcd-host', dest='etcd_host', default='127.0.0.1', help='etcd host')
     parser.add_argument('--etcd-port', dest='etcd_port', default=4001, type=bool, help='etcd port')
+    parser.add_argument('--no-logs', dest='no_logs', action='store_true', help='don\'t include logs')
 
     subparsers = parser.add_subparsers(help='sub-command help')
     parser_backup = subparsers.add_parser('backup', help='backup help')

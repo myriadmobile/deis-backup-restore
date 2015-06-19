@@ -15,8 +15,3 @@ ExecStopPost=-/usr/bin/docker rm -f deis-backup
 
 [X-Fleet]
 MachineOf=deis-store-gateway@1.service
-
-
-ExecStartPre=-/usr/bin/docker kill nrsysmond
-ExecStartPre=-/usr/bin/docker rm nrsysmond
-ExecStartPre=/usr/bin/docker pull newrelic/nrsysmond

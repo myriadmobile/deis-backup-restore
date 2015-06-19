@@ -1,8 +1,8 @@
 [Unit]
-Description=deis-backup-restore-timer
+Description=deis-backup-timer
 
 [Timer]
 OnCalendar=daily
 
 [X-Fleet]
-X-ConditionMachineOf=deis-backup-restore.service
+X-ConditionMachineOf=deis-backup.service

@@ -151,7 +151,7 @@ class DeisBackupRestore:
     def backup_bucket(self, deis_bucket_name):
         print('backing up bucket ' + deis_bucket_name)
 
-        pool = BucketThreadPool(8, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
+        pool = BucketThreadPool(4, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
 
         deis_bucket = self.get_deis_s3_bucket(deis_bucket_name)
         for key in deis_bucket.list():
@@ -183,7 +183,7 @@ class DeisBackupRestore:
         bucket_list = bucket.list()
         bucket.delete_keys([key.name for key in bucket_list])
 
-        pool = BucketThreadPool(8, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
+        pool = BucketThreadPool(4, self.get_deis_s3_bucket, deis_bucket_name, self.get_remote_s3_bucket)
 
         remote_bucket = self.get_remote_s3_bucket()
         for key in remote_bucket.list(prefix=self.get_base_directory() + '/' + deis_bucket_name + '/'):

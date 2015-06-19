@@ -3,11 +3,13 @@
 Deis Backup/Restore provides a simple method of backing up and restoring the gateway and etcd keys used by Deis.
 
 ## Features
-- backup and restore Deis etcd keys
+- backup and restore etcd
 - backup and restore the registry and database
+- backup and restore logs
 - highly configurable
 - works with any s3 compatible stores
 - multi-threaded for performance
+- low memory and storage requirements
 
 ## Basic Usage
 

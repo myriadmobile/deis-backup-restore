@@ -6,6 +6,8 @@ import json
 import subprocess
 import tempfile
 from threading import Thread
+import sys
+import traceback
 
 import boto
 from boto.s3.connection import OrdinaryCallingFormat
@@ -96,16 +98,36 @@ class DeisBackupRestore:
         return '/' + self.get_base_directory() + '/' + deis_bucket_name + '/' + deis_key_name
 
     def backup(self):
-        self.backup_etcd()
-        self.backup_database_sql()
-        self.backup_database_wal()
-        self.backup_registry()
+        try:
+            self.backup_etcd()
+            self.backup_database_sql()
+            self.backup_database_wal()
+            self.backup_registry()
+        except:
+            ex_type, ex, tb = sys.exc_info()
+            try:
+                self.write_failure_file(traceback.format_exc())
+            except:
+                pass
+            raise ex_type, ex, tb
+        else:
+            self.write_success_file()
 
     def restore(self, base_directory):
         self._base_directory = base_directory
         self.restore_etcd()
         self.restore_database_wal()
         self.restore_registry()
+
+    def write_success_file(self):
+        bucket = self.get_remote_s3_bucket()
+        key = Key(bucket, '/' + self.get_base_directory() + '/success')
+        self.set_contents_from_string(key, '')
+
+    def write_failure_file(self, message=''):
+        bucket = self.get_remote_s3_bucket()
+        key = Key(bucket, '/' + self.get_base_directory() + '/failure')
+        self.set_contents_from_string(key, message)
 
     def backup_database_sql(self):
         print('backing up database sql')

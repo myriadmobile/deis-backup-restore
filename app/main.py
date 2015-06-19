@@ -207,6 +207,32 @@ class DeisBackupRestore:
     def backup_etcd(self):
         print ('backing up etcd...')
 
+        root_dir = self.get_etcd_connection().read('/', recursive=True)
+        d = {}
+        for entry in root_dir.children:
+            d[entry.modifiedIndex] = {
+                'key': entry.key,
+                'value': entry.value,
+                'ttl': entry.ttl,
+                'dir': entry.dir,
+                'index': entry.modifiedIndex
+            }
+
+        indexes = sorted(d.keys())
+        dumplist = []
+        for idx in indexes:
+            dumplist.append(d[idx])
+
+        bucket = self.get_remote_s3_bucket()
+        key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
+        self.set_contents_from_string(key, json.dumps(dumplist))
+
+    def restore_etcd(self):
+        print ('restoring etcd...')
+        bucket = self.get_remote_s3_bucket()
+        key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
+        data = json.loads(key.get_contents_as_string(encoding='utf-8'))
+
         whitelist = [
             '/deis/builder/image',
             '/deis/cache/maxmemory',
@@ -269,35 +295,9 @@ class DeisBackupRestore:
             '/deis/store/monitor/image'
         ]
 
-        directory = self.get_etcd_connection().read('/deis/', recursive=True)
-        d = {}
-        for entry in directory.children:
-            if entry.key in whitelist:
-                d[entry.modifiedIndex] = {
-                    'key': entry.key,
-                    'value': entry.value,
-                    'ttl': entry.ttl,
-                    'dir': entry.dir,
-                    'index': entry.modifiedIndex
-                }
-
-        indexes = sorted(d.keys())
-        dumplist = []
-        for idx in indexes:
-            dumplist.append(d[idx])
-
-        bucket = self.get_remote_s3_bucket()
-        key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
-        self.set_contents_from_string(key, json.dumps(dumplist))
-
-    def restore_etcd(self):
-        print ('restoring etcd...')
-        bucket = self.get_remote_s3_bucket()
-        key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
-        data = json.loads(key.get_contents_as_string(encoding='utf-8'))
-
         for entry in data:
-            self.set_etcd_value(entry)
+            if entry['key'].encode('utf-8') in whitelist:
+                self.set_etcd_value(entry)
 
     def set_etcd_value(self, entry):
         if self._dry_run:

@@ -6,7 +6,6 @@ import json
 import subprocess
 import tempfile
 from threading import Thread
-import time
 import sys
 import traceback
 
@@ -22,6 +21,8 @@ class DeisBackupRestore:
     _base_directory = None
 
     _log_path = '/data/logs/'
+
+    _max_spool_bytes = 1000000
 
     def __init__(self, aws_access_key_id='', aws_secret_access_key='', host='s3.amazonaws.com', port=443,
                  is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, no_logs=False, dry_run=False):
@@ -147,6 +148,7 @@ class DeisBackupRestore:
         bucket = self.get_remote_s3_bucket()
         key = Key(bucket, self.get_remote_key_name('other', 'database.sql'))
         self.set_contents_from_string(key, output)
+        key.close()
 
     def backup_bucket(self, deis_bucket_name):
         print('backing up bucket ' + deis_bucket_name)
@@ -162,12 +164,14 @@ class DeisBackupRestore:
     def backup_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
         key = Key(deis_bucket, key_name)
         remote_key = Key(remote_bucket, self.get_remote_key_name(deis_bucket_name, key_name))
-        if key.size < 16000000:  # less than 16mb, do in ram
-            self.set_contents_from_string(remote_key, key.get_contents_as_string())
-        else:
-            temp = tempfile.SpooledTemporaryFile()
-            key.get_contents_to_file(temp)
-            self.set_contents_from_file(remote_key, temp)
+
+        temp = tempfile.SpooledTemporaryFile(self._max_spool_bytes)
+        key.get_contents_to_file(temp)
+        self.set_contents_from_file(remote_key, temp)
+        temp.close()
+
+        key.close()
+        remote_key.close()
 
     def restore_bucket(self, deis_bucket_name):
         print('restoring bucket ' + deis_bucket_name)
@@ -194,12 +198,14 @@ class DeisBackupRestore:
     def restore_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
         key = Key(remote_bucket, key_name)
         deis_key = Key(deis_bucket, self.get_deis_key_name(deis_bucket_name, key.key))
-        if key.size < 16000000:  # less than 16mb, do in ram
-            self.set_contents_from_string(deis_key, key.get_contents_as_string())
-        else:
-            temp = tempfile.SpooledTemporaryFile()
-            key.get_contents_to_file(temp)
-            self.set_contents_from_file(deis_key, temp)
+
+        temp = tempfile.SpooledTemporaryFile(self._max_spool_bytes)
+        key.get_contents_to_file(temp)
+        self.set_contents_from_file(deis_key, temp)
+        temp.close()
+
+        key.close()
+        deis_key.close()
 
     def set_contents_from_string(self, key, string):
         if self._dry_run:
@@ -346,8 +352,11 @@ class DeisBackupRestore:
         log_files = [f for f in os.listdir(self._log_path) if os.path.isfile(os.path.join(self._log_path, f))]
         for filename in log_files:
             file_path = os.path.join(self._log_path, filename)
+            fp = file(file_path)
             key = Key(self.get_remote_s3_bucket(), self.get_remote_key_name('logs', filename))
-            self.set_contents_from_file(key, file(file_path))
+            self.set_contents_from_file(key, fp)
+            key.close()
+            fp.close()
 
     def restore_logs(self):
         print('restoring logs')
@@ -361,48 +370,19 @@ class DeisBackupRestore:
 class BucketWorker(Thread):
     """Thread executing tasks from a given tasks queue"""
 
-    deis_bucket = None
-    remote_bucket = None
-
-    current_task = None
-    try_num = 0
-
-    def __init__(self, tasks, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
+    def __init__(self, tasks, deis_bucket, remote_bucket):
         Thread.__init__(self)
+        self.deis_bucket = deis_bucket
+        self.remote_bucket = remote_bucket
         self.tasks = tasks
-        self.deis_bucket_fn = deis_bucket_fn
-        self.deis_bucket_name = deis_bucket_name
-        self.remote_bucket_fn = remote_bucket_fn
         self.daemon = True
         self.start()
 
-    def reset_connections(self):
-        self.deis_bucket = self.deis_bucket_fn(self.deis_bucket_name)
-        self.remote_bucket = self.remote_bucket_fn()
-
     def run(self):
         while True:
-            if self.try_num == 0:
-                self.current_task = self.tasks.get()
-
-            try:
-                if self.deis_bucket is None:
-                    self.reset_connections()
-                func, args = self.current_task
-                func(*args, **{'deis_bucket': self.deis_bucket, 'remote_bucket': self.remote_bucket})
-            except:
-                print traceback.format_exc()
-                self.deis_bucket = None
-                if self.try_num < 3:
-                    self.try_num += 1
-                    time.sleep(self.try_num * 2)
-                    continue
-
+            func, args = self.tasks.get()
+            func(*args, **{'deis_bucket': self.deis_bucket, 'remote_bucket': self.remote_bucket})
             self.tasks.task_done()
-            self.try_num = 0
-
-            if self.tasks.empty():
-                time.sleep(1)
 
 
 class BucketThreadPool:
@@ -411,7 +391,7 @@ class BucketThreadPool:
     def __init__(self, num_threads, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
         self.tasks = Queue(num_threads)
         for _ in range(num_threads):
-            BucketWorker(self.tasks, deis_bucket_fn, deis_bucket_name, remote_bucket_fn)
+            BucketWorker(self.tasks, deis_bucket_fn(deis_bucket_name), remote_bucket_fn())
 
     def add_task(self, func, *args):
         """Add a task to the queue"""

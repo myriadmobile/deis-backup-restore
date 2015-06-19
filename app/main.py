@@ -92,6 +92,7 @@ class DeisBackupRestore:
         return '/' + self.get_base_directory() + '/' + deis_bucket_name + '/' + deis_key_name
 
     def backup(self):
+        started_at = datetime.utcnow()
         try:
             self.backup_etcd()
             self.backup_database_sql()
@@ -105,7 +106,7 @@ class DeisBackupRestore:
                 pass
             raise ex_type, ex, tb
         else:
-            self.write_success_file()
+            self.write_success_file(started_at, datetime.utcnow())
 
     def restore(self, base_directory):
         self._base_directory = base_directory
@@ -113,10 +114,13 @@ class DeisBackupRestore:
         self.restore_database_wal()
         self.restore_registry()
 
-    def write_success_file(self):
+    def write_success_file(self, started_at, ended_at):
         bucket = self.get_remote_s3_bucket()
         key = Key(bucket, '/' + self.get_base_directory() + '/success')
-        self.set_contents_from_string(key, '')
+        message = 'Started at ' + started_at.isoformat() + '\n'
+        message += 'Ended at ' + ended_at.isoformat() + '\n'
+        message += 'Took ' + str(ended_at - started_at)
+        self.set_contents_from_string(key, message)
 
     def write_failure_file(self, message=''):
         bucket = self.get_remote_s3_bucket()

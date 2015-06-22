@@ -54,6 +54,9 @@ class DeisBackupRestore:
         except:
             return default
 
+    def set_etcd_value(self, key, value, ttl=None):
+        return self.get_etcd_connection().set(key, value, ttl)
+
     def get_deis_s3_connection_args(self):
         host = self.get_etcd_value('/deis/store/gateway/host')
         port = self.get_etcd_value('/deis/store/gateway/port')
@@ -117,9 +120,10 @@ class DeisBackupRestore:
 
     def restore(self, base_directory):
         self._base_directory = base_directory
-        self.restore_etcd()
+        self.set_router_body_size('2048m')
         self.restore_database_wal()
         self.restore_registry()
+        self.restore_etcd()
         if not self._no_data:
             self.restore_data()
 
@@ -135,6 +139,10 @@ class DeisBackupRestore:
         bucket = self.get_remote_s3_bucket()
         key = Key(bucket, '/' + self.get_base_directory() + '/failure')
         self.set_contents_from_string(key, message)
+
+    def set_router_body_size(self, size='1m'):
+        key = '/deis/router/bodySize'
+        self.set_etcd_value(key, size)
 
     def backup_database_sql(self):
         print('backing up database sql')
@@ -338,9 +346,9 @@ class DeisBackupRestore:
 
         for entry in data:
             if entry['key'].encode('utf-8') in whitelist:
-                self.set_etcd_value(entry)
+                self.restore_etcd_value(entry)
 
-    def set_etcd_value(self, entry):
+    def restore_etcd_value(self, entry):
         if self._dry_run:
             print('dry-run: not setting ' + entry['key'].encode('utf-8') + ' => ' + entry['value'].encode('utf-8'))
         else:

@@ -1,12 +1,13 @@
 #!/usr/bin/env python
-from Queue import Queue
+import Queue
 import argparse
 from datetime import datetime
+import time
 import json
 import subprocess
 import tempfile
-from threading import Thread
 import sys
+import threading
 import traceback
 
 import boto
@@ -20,12 +21,12 @@ class DeisBackupRestore:
     _etcd_connection = None
     _base_directory = None
 
-    _log_path = '/data/logs/'
+    _data_path = '/data/'
 
     _max_spool_bytes = 1000000
 
     def __init__(self, aws_access_key_id='', aws_secret_access_key='', host='s3.amazonaws.com', port=443,
-                 is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, no_logs=False, dry_run=False):
+                 is_secure=True, bucket_name='deis-backup', etcd_host='127.0.0.1', etcd_port=4001, no_data=False, dry_run=False):
         self._remote_access_key = aws_access_key_id
         self._remote_secret_key = aws_secret_access_key
         self._remote_host = host
@@ -34,7 +35,7 @@ class DeisBackupRestore:
         self._remote_bucket_name = bucket_name
         self._etcd_host = etcd_host
         self._etcd_port = etcd_port
-        self._no_logs = no_logs
+        self._no_data = no_data
         self._dry_run = dry_run
 
     def get_base_directory(self):
@@ -102,8 +103,8 @@ class DeisBackupRestore:
             self.backup_database_sql()
             self.backup_database_wal()
             self.backup_registry()
-            if not self._no_logs:
-                self.backup_logs()
+            if not self._no_data:
+                self.backup_data()
         except:
             ex_type, ex, tb = sys.exc_info()
             try:
@@ -119,8 +120,8 @@ class DeisBackupRestore:
         self.restore_etcd()
         self.restore_database_wal()
         self.restore_registry()
-        if not self._no_logs:
-            self.restore_logs()
+        if not self._no_data:
+            self.restore_data()
 
     def write_success_file(self, started_at, ended_at):
         bucket = self.get_remote_s3_bucket()
@@ -159,7 +160,7 @@ class DeisBackupRestore:
         for key in deis_bucket.list():
             pool.add_task(self.backup_file, *(deis_bucket_name, key.key))
 
-        pool.wait_completion()
+        pool.wait_and_shutdown()
 
     def backup_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
         key = Key(deis_bucket, key_name)
@@ -193,7 +194,7 @@ class DeisBackupRestore:
         for key in remote_bucket.list(prefix=self.get_base_directory() + '/' + deis_bucket_name + '/'):
             pool.add_task(self.restore_file, *(deis_bucket_name, key.key))
 
-        pool.wait_completion()
+        pool.wait_and_shutdown()
 
     def restore_file(self, deis_bucket_name, key_name, deis_bucket=None, remote_bucket=None):
         key = Key(remote_bucket, key_name)
@@ -346,60 +347,135 @@ class DeisBackupRestore:
             self.get_etcd_connection().write(entry['key'].encode('utf-8'), entry['value'].encode('utf-8'),
                                              ttl=entry['ttl'], dir=entry['dir'])
 
-    def backup_logs(self):
-        print('backing up logs')
+    def backup_data(self):
+        print('backing up data...')
 
-        log_files = [f for f in os.listdir(self._log_path) if os.path.isfile(os.path.join(self._log_path, f))]
-        for filename in log_files:
-            file_path = os.path.join(self._log_path, filename)
-            fp = file(file_path)
-            key = Key(self.get_remote_s3_bucket(), self.get_remote_key_name('logs', filename))
-            self.set_contents_from_file(key, fp)
-            key.close()
-            fp.close()
+        pool = BucketThreadPool(6, None, None, self.get_remote_s3_bucket)
 
-    def restore_logs(self):
-        print('restoring logs')
+        for root, dirnames, filenames in os.walk(self._data_path):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                key_name = file_path[len(self._data_path):]
+                remote_key_name = self.get_remote_key_name('data', key_name)
+                pool.add_task(self.backup_data_file, *(file_path, remote_key_name))
+
+        pool.wait_and_shutdown()
+
+    def backup_data_file(self, file_path, remote_key_name, remote_bucket=None):
+        stat = os.stat(file_path)
+        fp = file(file_path)
+        key = Key(remote_bucket, remote_key_name)
+        key.metadata = {'uid': stat.st_uid, 'gid': stat.st_gid}
+        self.set_contents_from_file(key, fp)
+        key.close()
+        fp.close()
+
+    def restore_data(self):
+        print('restoring data...')
+
+        pool = BucketThreadPool(6, None, None, self.get_remote_s3_bucket)
 
         remote_bucket = self.get_remote_s3_bucket()
-        for key in remote_bucket.list(prefix=self.get_base_directory() + '/logs/'):
-            file_path = os.path.join(self._log_path, os.path.basename(key.key))
-            self.get_contents_to_file(key, file_path)
+        prefix = self.get_base_directory() + '/data/'
+        for key in remote_bucket.list(prefix=prefix):
+            file_path = os.path.join(self._data_path, key.key[len(prefix):])
+            dir_name = os.path.dirname(file_path)
+            if not os.path.exists(dir_name):
+                os.makedirs(dir_name)
+            pool.add_task(self.restore_data_file, *(file_path, key.key))
+
+        pool.wait_and_shutdown()
+
+    def restore_data_file(self, file_path, remote_key_name, remote_bucket=None):
+        fp = file(file_path, 'w')
+        key = Key(remote_bucket, remote_key_name)
+        self.get_contents_to_file(key, fp)
+        try:
+            uid = int(key.get_metadata('uid'))
+            gid = int(key.get_metadata('gid'))
+            os.chown(file_path, uid, gid)
+        except:
+            pass
+
+        key.close()
+        fp.close()
 
 
-class BucketWorker(Thread):
-    """Thread executing tasks from a given tasks queue"""
+class ThreadPool:
+    _workers = []
 
-    def __init__(self, tasks, deis_bucket, remote_bucket):
-        Thread.__init__(self)
-        self.deis_bucket = deis_bucket
-        self.remote_bucket = remote_bucket
-        self.tasks = tasks
-        self.daemon = True
-        self.start()
+    def __init__(self, num_threads, **worker_args):
+        self._tasks = Queue.Queue(num_threads)
+        self._worker_args = worker_args
 
-    def run(self):
-        while True:
-            func, args = self.tasks.get()
-            func(*args, **{'deis_bucket': self.deis_bucket, 'remote_bucket': self.remote_bucket})
-            self.tasks.task_done()
-
-
-class BucketThreadPool:
-    """Pool of threads consuming tasks from a queue"""
-
-    def __init__(self, num_threads, deis_bucket_fn, deis_bucket_name, remote_bucket_fn):
-        self.tasks = Queue(num_threads)
         for _ in range(num_threads):
-            BucketWorker(self.tasks, deis_bucket_fn(deis_bucket_name), remote_bucket_fn())
+            self.create_worker(self._tasks, self._worker_args)
+
+    def create_worker(self, tasks, **worker_args):
+        self._workers.append(ThreadPoolWorker(tasks, worker_args))
 
     def add_task(self, func, *args):
-        """Add a task to the queue"""
-        self.tasks.put((func, args))
+        self._tasks.put((func, args))
 
     def wait_completion(self):
-        """Wait for completion of all the tasks in the queue"""
-        self.tasks.join()
+        self._tasks.join()
+
+    def shutdown(self):
+        for worker in self._workers:
+            worker.stop()
+
+    def wait_and_shutdown(self):
+        self.wait_completion()
+        self.shutdown()
+
+
+class BucketThreadPool(ThreadPool):
+    _deis_bucket = None
+    _remote_bucket = None
+
+    def __init__(self, num_threads, deis_bucket_fn, deis_bucket_name, remote_bucket_fn, **worker_args):
+        if deis_bucket_fn is not None:
+            self._deis_bucket = deis_bucket_fn(deis_bucket_name)
+
+        if remote_bucket_fn is not None:
+            self._remote_bucket = remote_bucket_fn()
+
+        ThreadPool.__init__(self, num_threads, **worker_args)
+
+    def create_worker(self, tasks, deis_bucket_fn=None, deis_bucket_name=None, remote_bucket_fn=None, **worker_args):
+        if self._deis_bucket is not None:
+            worker_args['deis_bucket'] = self._deis_bucket
+        if self._remote_bucket is not None:
+            worker_args['remote_bucket'] = self._remote_bucket
+        self._workers.append(ThreadPoolWorker(tasks, **worker_args))
+
+
+class ThreadPoolWorker(threading.Thread):
+    def __init__(self, tasks, **args):
+        threading.Thread.__init__(self)
+        self._stop = threading.Event()
+        self._tasks = tasks
+        self._args = args
+        self.daemon = False
+        self.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def stopped(self):
+        return self._stop.isSet()
+
+    def run(self):
+        while not self.stopped():
+            try:
+                func, args = self._tasks.get_nowait()
+                func(*args, **self._args)
+                self._tasks.task_done()
+            except Queue.Empty:
+                time.sleep(1)
+                pass
+            except:
+                print traceback.format_exc()
 
 
 if __name__ == '__main__':
@@ -413,7 +489,7 @@ if __name__ == '__main__':
     parser.add_argument('--dry-run', dest='dry_run', action='store_true', help='dry run')
     parser.add_argument('--etcd-host', dest='etcd_host', default='127.0.0.1', help='etcd host')
     parser.add_argument('--etcd-port', dest='etcd_port', default=4001, type=bool, help='etcd port')
-    parser.add_argument('--no-logs', dest='no_logs', action='store_true', help='don\'t include logs')
+    parser.add_argument('--no-data', dest='no_data', action='store_true', help='don\'t include store data')
 
     subparsers = parser.add_subparsers(help='sub-command help')
     parser_backup = subparsers.add_parser('backup', help='backup help')

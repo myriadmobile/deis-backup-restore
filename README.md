@@ -5,7 +5,7 @@ Deis Backup/Restore provides a simple method of backing up and restoring the gat
 ## Features
 - backup and restore etcd
 - backup and restore the registry and database
-- backup and restore logs
+- backup and restore store data (logs)
 - highly configurable
 - works with any s3 compatible stores
 - multi-threaded for performance
@@ -14,7 +14,7 @@ Deis Backup/Restore provides a simple method of backing up and restoring the gat
 ## Basic Usage
 
 ```bash
-docker run -it myriadmobile/deis-backup-restore:v1.0.3 \
+docker run -it myriadmobile/deis-backup-restore:v1.0.4 \
 	--key S3_ACCESS_KEY_ID \
 	--secret S3_SECRET_KEY \
 	--bucket S3_BUCKET_NAME \
@@ -27,7 +27,7 @@ docker run -it myriadmobile/deis-backup-restore:v1.0.3 \
 usage: main.py [-h] --key AWS_ACCESS_KEY_ID --secret AWS_SECRET_ACCESS_KEY
                --bucket BUCKET_NAME [--host HOST] [--port PORT] [--insecure]
                [--dry-run] [--etcd-host ETCD_HOST] [--etcd-port ETCD_PORT]
-               [--no-logs]
+               [--no-data]
                {backup,restore} ...
 
 Backup and restore Deis data
@@ -52,7 +52,7 @@ optional arguments:
                         etcd host
   --etcd-port ETCD_PORT
                         etcd port
-  --no-logs             don't include logs
+  --no-data             don't include store data
 
 ```
 

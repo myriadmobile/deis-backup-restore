@@ -2,6 +2,7 @@
 import Queue
 import argparse
 from datetime import datetime
+import fnmatch
 import time
 import json
 import subprocess
@@ -282,70 +283,20 @@ class DeisBackupRestore:
         key = Key(bucket, self.get_remote_key_name('other', 'etcd.json'))
         data = json.loads(key.get_contents_as_string(encoding='utf-8'))
 
-        whitelist = [
-            '/deis/builder/image',
-            '/deis/cache/maxmemory',
-            '/deis/cache/image',
-            '/deis/controller/registrationMode',
-            '/deis/controller/subdomain',
-            '/deis/controller/webEnabled',
-            '/deis/controller/workers',
-            '/deis/controller/unitHostname',
-            '/deis/controller/image',
-            '/deis/controller/unitHostname',
-            '/deis/controller/auth/ldap/endpoint',
-            '/deis/controller/auth/ldap/bind/dn',
-            '/deis/controller/auth/ldap/bind/password',
-            '/deis/controller/auth/ldap/user/basedn',
-            '/deis/controller/auth/ldap/user/filter',
-            '/deis/controller/auth/ldap/group/basedn',
-            '/deis/controller/auth/ldap/group/filter',
-            '/deis/controller/auth/ldap/group/type'
-            '/deis/database/image',
-            '/deis/logger/image',
-            '/deis/logs/image',
-            '/deis/logs/drain',
-            '/deis/registry/image',
-            '/deis/router/affinityArg',
-            '/deis/router/bodySize',
-            '/deis/router/defaultTimeout',
-            '/deis/router/builder/timeout/connect',
-            '/deis/router/builder/timeout/tcp',
-            '/deis/router/controller/timeout/connect',
-            '/deis/router/controller/timeout/read',
-            '/deis/router/controller/timeout/send',
-            '/deis/router/enforceHTTPS',
-            '/deis/router/firewall/enabled',
-            '/deis/router/firewall/errorCode',
-            '/deis/router/errorLogLevel',
-            '/deis/router/gzip',
-            '/deis/router/gzipCompLevel',
-            '/deis/router/gzipDisable',
-            '/deis/router/gzipHttpVersion',
-            '/deis/router/gzipMinLength',
-            '/deis/router/gzipProxied',
-            '/deis/router/gzipTypes',
-            '/deis/router/gzipVary',
-            '/deis/router/gzipDisable',
-            '/deis/router/gzipTypes',
-            '/deis/router/maxWorkerConnections',
-            '/deis/router/serverNameHashMaxSize',
-            '/deis/router/serverNameHashBucketSize',
-            '/deis/router/sslCert',
-            '/deis/router/sslKey',
-            '/deis/router/workerProcesses',
-            '/deis/router/proxyProtocol',
-            '/deis/router/proxyRealIpCidr',
-            '/deis/router/image'
-            '/deis/store/daemon/image'
-            '/deis/store/gateway/image'
-            '/deis/store/metadate/image'
-            '/deis/store/metadate/image'
-            '/deis/store/monitor/image'
+        blacklist = [
+            '/deis/builder/users/*',
+            '/deis/services/*',
+            '/deis/domains/*',
+            '/deis/store/*'
         ]
 
         for entry in data:
-            if entry['key'].encode('utf-8') in whitelist:
+            entry_key = entry['key'].encode('utf-8')
+            blacklisted = False
+            for blacklisted_pattern in blacklist:
+                if fnmatch.fnmatch(entry_key, blacklisted_pattern):
+                    blacklisted = True
+            if not blacklisted:
                 self.restore_etcd_value(entry)
 
     def restore_etcd_value(self, entry):

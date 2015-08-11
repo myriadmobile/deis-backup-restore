@@ -180,6 +180,7 @@ from api.models import *
 [a.save() for a in App.objects.all()]
 [d.save() for d in Domain.objects.all()]
 [c.save() for c in Certificate.objects.all()]
+[c.save() for c in Config.objects.all()]
 EOF
 exit
 ```

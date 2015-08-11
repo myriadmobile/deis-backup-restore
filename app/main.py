@@ -284,6 +284,7 @@ class DeisBackupRestore:
         data = json.loads(key.get_contents_as_string(encoding='utf-8'))
 
         blacklist = [
+            '/coreos.com/*',
             '/deis/builder/users/*',
             '/deis/services/*',
             '/deis/domains/*',

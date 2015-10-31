@@ -286,9 +286,19 @@ class DeisBackupRestore:
         blacklist = [
             '/coreos.com/*',
             '/deis/builder/users/*',
-            '/deis/services/*',
+            '/deis/cache/*',
+            '/deis/certs/*',
+            '/deis/config/*',
+            '/deis/database/initId',
             '/deis/domains/*',
-            '/deis/store/*'
+            '/deis/platform/domain',
+            '/deis/platform/sshPrivateKey',
+            '/deis/registry/hosts/*'
+            '/deis/registry/masterLock',
+            '/deis/router/hosts/*',
+            '/deis/services/*',
+            '/deis/store/*',
+            '/registry/*'
         ]
 
         for entry in data:

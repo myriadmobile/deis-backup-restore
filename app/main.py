@@ -314,8 +314,16 @@ class DeisBackupRestore:
         if self._dry_run:
             print('dry-run: not setting ' + entry['key'].encode('utf-8') + ' => ' + entry['value'].encode('utf-8'))
         else:
-            self.get_etcd_connection().write(entry['key'].encode('utf-8'), entry['value'].encode('utf-8'),
+            try:
+                key = entry['key']
+                if key is not None:
+                    self.get_etcd_connection().write(key.encode('utf-8'), entry['value'].encode('utf-8'),
                                              ttl=entry['ttl'], dir=entry['dir'])
+                else:
+                    print('Failed to restore etcd entry: empty key')
+            except:
+                print('Failed to restore etcd entry')
+                print traceback.format_exc()
 
     def backup_data(self):
         print('backing up data...')

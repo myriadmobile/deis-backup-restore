@@ -1,6 +1,6 @@
 REPO = myriadmobile
 NAME = deis-backup-restore
-VERSION = v1.0.4
+VERSION = v1.0.5
 
 build: build-app
 
